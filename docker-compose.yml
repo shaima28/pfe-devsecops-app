@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo
+    container_name: mongo-local
+    ports:
+      - "27017:27017"
+
+  app:
+    build: .
+    container_name: livestream-app
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      MONGO_URI: mongodb://mongo:27017/livestream_db
+    depends_on:
+      - mongo

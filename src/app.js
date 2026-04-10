@@ -1,58 +1,43 @@
-let express = require( 'express' );
+let express = require('express');
 let app = express();
-let server = require( 'http' ).Server( app );
-let io = require( 'socket.io' )( server );
-let stream = require( './ws/stream' );
-let path = require( 'path' );
-let favicon = require( 'serve-favicon' );
+let server = require('http').Server(app);
+let io = require('socket.io')(server);
+let stream = require('./ws/stream');
+let path = require('path');
+let favicon = require('serve-favicon');
 
-const {MongoClient} = require('mongodb');
+const { MongoClient } = require('mongodb');
 const Thing = require('./models/user');
 
-async function main(){
-  /**
-   * Connection URI. Update <username>, <password>, and <your-cluster-url> to reflect your cluster.
-   * See https://docs.mongodb.com/ecosystem/drivers/node/ for more details
-   */
-  const uri = "mongodb+srv://Tarek:Tarek@cluster0.jzh9xbj.mongodb.net/?retryWrites=true&w=majority";
+const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/livestream_db';
 
+const client = new MongoClient(MONGO_URI);
 
-  const client = new MongoClient(uri);
-
+async function connectDB() {
   try {
-      // Connect to the MongoDB cluster
-      await client.connect();
-      console.log("Connected correctly to server");
-
-      // Make the appropriate DB calls
-
+    await client.connect();
+    console.log('Connected correctly to MongoDB');
   } catch (e) {
-      console.error(e);
-  } finally {
-      await client.close();
+    console.error('MongoDB connection error:', e);
   }
-  
 }
 
+connectDB().catch(console.error);
 
-main().catch(console.error);
+app.use(favicon(path.join(__dirname, 'favicon.ico')));
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/index.html');
+});
 
+app.get('/login', (req, res) => {
+  res.sendFile(__dirname + '/login.html');
+});
 
-app.use( favicon( path.join( __dirname, 'favicon.ico' ) ) );
-app.use( '/assets', express.static( path.join( __dirname, 'assets' ) ) );
+io.of('/stream').on('connection', stream);
 
-app.get( '/', ( req, res ) => {
-    res.sendFile( __dirname + '/index.html' );
-} );
-app.get( '/login', ( req, res ) => {
-    res.sendFile(__dirname +'/login.html' );
-} );
-
-
-
-
-
-io.of( '/stream' ).on( 'connection', stream );
-
-server.listen( 3000 );
+server.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
