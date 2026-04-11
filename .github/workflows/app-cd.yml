@@ -79,7 +79,7 @@ jobs:
           content = target_file.read_text(encoding="utf-8")
 
           pattern = r"(?ms)(-\s*name:\s*" + re.escape(image_name) + r"\s*\n\s*newTag:\s*)(\S+)"
-          updated_content, count = re.subn(pattern, r"\1" + new_tag, content)
+          updated_content, count = re.subn(pattern, r"\g<1>" + new_tag, content)
 
           if count == 0:
               print("Could not update newTag. Check kustomization.yaml structure.")
