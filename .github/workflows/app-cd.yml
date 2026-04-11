@@ -1,4 +1,4 @@
-name: App CD - Build and Push Docker Image
+name: App CD - Build, Push and Update GitOps
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-push:
+  build-push-update-gitops:
     runs-on: ubuntu-latest
 
     permissions:
@@ -18,9 +18,13 @@ jobs:
       GAR_LOCATION: europe-west1
       GAR_REPOSITORY: dev-docker-repo
       IMAGE_NAME: livestream-server
+      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_FULL_NAME: europe-west1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/dev-docker-repo/livestream-server
+      GITOPS_REPO: shaima28/pfe-devsecops-gitops
+      GITOPS_FILE: gitops/apps/marketing-app/overlays/dev/kustomization.yaml
 
     steps:
-      - name: Checkout code
+      - name: Checkout app repository
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
@@ -32,16 +36,69 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker
+      - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev --quiet
 
       - name: Build Docker image
         run: |
-          docker build -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$IMAGE_NAME:${{ github.sha }} .
-          docker tag $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$IMAGE_NAME:${{ github.sha }} \
-                     $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$IMAGE_NAME:latest
+          docker build -t $IMAGE_FULL_NAME:$IMAGE_TAG .
+          docker tag $IMAGE_FULL_NAME:$IMAGE_TAG $IMAGE_FULL_NAME:latest
 
       - name: Push Docker image
         run: |
-          docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$IMAGE_NAME:${{ github.sha }}
-          docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$IMAGE_NAME:latest
+          docker push $IMAGE_FULL_NAME:$IMAGE_TAG
+          docker push $IMAGE_FULL_NAME:latest
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Update image tag in GitOps repository
+        env:
+          NEW_TAG: ${{ github.sha }}
+          TARGET_FILE: ${{ env.GITOPS_FILE }}
+          IMAGE_NAME_TO_MATCH: ${{ env.IMAGE_FULL_NAME }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import sys
+
+          target_file = Path(os.environ["TARGET_FILE"])
+          new_tag = os.environ["NEW_TAG"]
+          image_name = os.environ["IMAGE_NAME_TO_MATCH"]
+
+          if not target_file.exists():
+              print(f"File not found: {target_file}")
+              sys.exit(1)
+
+          content = target_file.read_text(encoding="utf-8")
+
+          pattern = r"(?ms)(-\s*name:\s*" + re.escape(image_name) + r"\s*\n\s*newTag:\s*)(\S+)"
+          updated_content, count = re.subn(pattern, r"\1" + new_tag, content)
+
+          if count == 0:
+              print("Could not update newTag. Check kustomization.yaml structure.")
+              sys.exit(1)
+
+          target_file.write_text(updated_content, encoding="utf-8")
+          print(f"Updated {target_file} with newTag: {new_tag}")
+          PY
+
+      - name: Show GitOps changes
+        run: |
+          cd gitops
+          git diff -- apps/marketing-app/overlays/dev/kustomization.yaml
+
+      - name: Commit and push GitOps changes
+        run: |
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/marketing-app/overlays/dev/kustomization.yaml
+          git commit -m "Update marketing-app image to $IMAGE_TAG" || echo "No changes to commit"
+          git push origin main
