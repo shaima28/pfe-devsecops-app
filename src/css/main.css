@@ -497,4 +497,7 @@ input {
     display: block;
     padding: 60px 50px;
   }
+  .create-room-text {
+  color: red;
+}
 }
