@@ -1,4 +1,4 @@
-name: App CD - Build, Push and Update GitOps
+name: App CD - Build, Scan, Push and Update GitOps
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-push-update-gitops:
+  build-scan-push-update-gitops:
     runs-on: ubuntu-latest
 
     permissions:
@@ -28,10 +28,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -43,6 +45,15 @@ jobs:
         run: |
           docker build -t $IMAGE_FULL_NAME:$IMAGE_TAG .
           docker tag $IMAGE_FULL_NAME:$IMAGE_TAG $IMAGE_FULL_NAME:latest
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_FULL_NAME }}:${{ env.IMAGE_TAG }}
+          format: table
+          exit-code: 0
+          ignore-unfixed: true
+          severity: CRITICAL
 
       - name: Push Docker image
         run: |
