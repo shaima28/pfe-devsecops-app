@@ -10,30 +10,38 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      security-events: write
+
     steps:
-      # 1. Checkout du code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
 
-      # 3. Installation des dépendances
       - name: Install dependencies
         run: npm ci
 
-      # 4. Vérification syntaxique du fichier principal
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: CRITICAL
+
       - name: Check app syntax
         run: node --check src/app.js
 
-      # 5. Test (non bloquant)
       - name: Run tests
         run: npm test
 
-      # 6. Vérification Docker (très important pour ton projet)
       - name: Build Docker image
         run: docker build -t test-image .
