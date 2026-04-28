@@ -23,7 +23,9 @@ async function connectDB() {
   }
 }
 
-connectDB().catch(console.error);
+if (process.env.NODE_ENV !== 'test') {
+  connectDB().catch(console.error);
+}
 
 app.use(favicon(path.join(__dirname, 'favicon.ico')));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
@@ -38,6 +40,10 @@ app.get('/login', (req, res) => {
 
 io.of('/stream').on('connection', stream);
 
-server.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = { app };

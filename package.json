@@ -20,7 +20,7 @@
   "scripts": {
     "start": "node src/app.js",
     "watch": "nodemon --watch \"src/\" --exec \"node src/app.js\"",
-    "test": "jest --coverage"
+    "test": "set NODE_ENV=test&& jest --coverage"
   },
   "repository": {
     "type": "git",
