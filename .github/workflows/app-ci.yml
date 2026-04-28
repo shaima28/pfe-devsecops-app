@@ -1,4 +1,4 @@
-name: App CI
+name: App CI Security
 
 on:
   push:
@@ -27,21 +27,45 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: table
-          exit-code: 0
-          ignore-unfixed: true
-          severity: CRITICAL
-
       - name: Check app syntax
         run: node --check src/app.js
 
       - name: Run tests
         run: npm test
 
+      # ✅ SONARQUBE
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # ✅ TRIVY FS
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      # ✅ BUILD
       - name: Build Docker image
-        run: docker build -t test-image .
+        run: docker build -t test-image:${{ github.sha }} .
+
+      # ✅ TRIVY IMAGE
+      - name: Trivy Docker image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: test-image:${{ github.sha }}
+          format: table
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
