@@ -13,6 +13,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      actions: read
 
     steps:
       - name: Checkout code
@@ -46,26 +47,78 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      # ✅ TRIVY FS
-      - name: Trivy filesystem scan
+      # ✅ TRIVY FILESYSTEM JSON
+      - name: Trivy filesystem scan JSON
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
-          format: table
+          format: json
+          output: trivy-fs-results.json
           ignore-unfixed: true
           severity: HIGH,CRITICAL
 
-      # ✅ BUILD
+      # ✅ BUILD DOCKER IMAGE
       - name: Build Docker image
         run: docker build -t test-image:${{ github.sha }} .
 
-      # ✅ TRIVY IMAGE
-      - name: Trivy Docker image scan
+      # ✅ TRIVY IMAGE JSON
+      - name: Trivy Docker image scan JSON
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: test-image:${{ github.sha }}
-          format: table
+          format: json
+          output: trivy-image-results.json
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+
+      # ✅ TABLEAU PRO DANS GITHUB ACTIONS SUMMARY
+      - name: Show Trivy vulnerabilities summary
+        if: always()
+        run: |
+          echo "## 🔐 Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          FS_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-fs-results.json)
+          FS_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-fs-results.json)
+
+          IMG_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-image-results.json)
+          IMG_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-image-results.json)
+
+          FS_TOTAL=$((FS_HIGH + FS_CRITICAL))
+          IMG_TOTAL=$((IMG_HIGH + IMG_CRITICAL))
+          TOTAL_HIGH=$((FS_HIGH + IMG_HIGH))
+          TOTAL_CRITICAL=$((FS_CRITICAL + IMG_CRITICAL))
+          GLOBAL_TOTAL=$((FS_TOTAL + IMG_TOTAL))
+
+          echo "| Scan Type | HIGH | CRITICAL | TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---:|---:|---:|" >> $GITHUB_STEP_SUMMARY
+          echo "| Filesystem Scan | $FS_HIGH | $FS_CRITICAL | $FS_TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Image Scan | $IMG_HIGH | $IMG_CRITICAL | $IMG_TOTAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Total** | **$TOTAL_HIGH** | **$TOTAL_CRITICAL** | **$GLOBAL_TOTAL** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$GLOBAL_TOTAL" -eq 0 ]; then
+            echo "✅ No HIGH or CRITICAL vulnerabilities detected." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ HIGH or CRITICAL vulnerabilities detected. Please review Trivy results." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ✅ TRIVY SARIF POUR GITHUB SECURITY
+      - name: Generate Trivy SARIF report
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: test-image:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
