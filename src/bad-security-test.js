@@ -1,13 +1,10 @@
 function login(user) {
-  const password = "admin123"; // Secret hardcodé volontairement
 
-  if (user.isAdmin = true) { // Bug volontaire : affectation au lieu de comparaison
+  if (user.isAdmin === true) {
     console.log("Admin access granted");
   }
 
-  eval(user.input); // Vulnérabilité volontaire
-
-  return password;
+  return "Login checked";
 }
 
 module.exports = login;
