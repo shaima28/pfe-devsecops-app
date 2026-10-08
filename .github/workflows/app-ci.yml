@@ -1,10 +1,11 @@
+
 name: App CI Security
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   ci:
@@ -16,38 +17,44 @@ jobs:
       actions: read
 
     steps:
+      # 1. Récupération du code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Configuration Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
+          cache: npm
 
+      # 3. Installation des dépendances
       - name: Install dependencies
         run: npm ci
 
+      # 4. Vérification de la syntaxe
       - name: Check app syntax
         run: node --check src/app.js
 
+      # 5. Exécution des tests
       - name: Run tests
         run: npm test
 
-      # ✅ SONARQUBE
+      # 6. Analyse SonarQube
       - name: SonarQube scan
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
+      # 7. Vérification du Quality Gate
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      # ✅ TRIVY FILESYSTEM JSON
+      # 8. Scan Trivy du système de fichiers
       - name: Trivy filesystem scan JSON
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -57,12 +64,13 @@ jobs:
           output: trivy-fs-results.json
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          exit-code: '0'
 
-      # ✅ BUILD DOCKER IMAGE
+      # 9. Construction de l'image Docker
       - name: Build Docker image
         run: docker build -t test-image:${{ github.sha }} .
 
-      # ✅ TRIVY IMAGE JSON
+      # 10. Scan Trivy de l'image Docker
       - name: Trivy Docker image scan JSON
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -72,13 +80,15 @@ jobs:
           output: trivy-image-results.json
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          exit-code: '0'
 
-      # ✅ TABLEAU PRO DANS GITHUB ACTIONS SUMMARY
+      # 11. Résumé des vulnérabilités
       - name: Show Trivy vulnerabilities summary
-        if: always()
+        if: ${{ success() && hashFiles('trivy-fs-results.json') != '' && hashFiles('trivy-image-results.json') != '' }}
+        shell: bash
         run: |
-          echo "## 🔐 Trivy Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔐 Trivy Security Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
           FS_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-fs-results.json)
           FS_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-fs-results.json)
@@ -92,22 +102,21 @@ jobs:
           TOTAL_CRITICAL=$((FS_CRITICAL + IMG_CRITICAL))
           GLOBAL_TOTAL=$((FS_TOTAL + IMG_TOTAL))
 
-          echo "| Scan Type | HIGH | CRITICAL | TOTAL |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---:|---:|---:|" >> $GITHUB_STEP_SUMMARY
-          echo "| Filesystem Scan | $FS_HIGH | $FS_CRITICAL | $FS_TOTAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| Docker Image Scan | $IMG_HIGH | $IMG_CRITICAL | $IMG_TOTAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Total** | **$TOTAL_HIGH** | **$TOTAL_CRITICAL** | **$GLOBAL_TOTAL** |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Scan Type | HIGH | CRITICAL | TOTAL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|---:|---:|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Filesystem Scan | $FS_HIGH | $FS_CRITICAL | $FS_TOTAL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Docker Image Scan | $IMG_HIGH | $IMG_CRITICAL | $IMG_TOTAL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Total** | **$TOTAL_HIGH** | **$TOTAL_CRITICAL** | **$GLOBAL_TOTAL** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$GLOBAL_TOTAL" -eq 0 ]; then
-            echo "✅ No HIGH or CRITICAL vulnerabilities detected." >> $GITHUB_STEP_SUMMARY
+            echo "✅ No HIGH or CRITICAL vulnerabilities detected." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "⚠️ HIGH or CRITICAL vulnerabilities detected. Please review Trivy results." >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ HIGH or CRITICAL vulnerabilities detected. Please review Trivy results." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # ✅ TRIVY SARIF POUR GITHUB SECURITY
+      # 12. Génération du rapport SARIF
       - name: Generate Trivy SARIF report
-        if: always()
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
@@ -116,9 +125,11 @@ jobs:
           output: trivy-results.sarif
           ignore-unfixed: true
           severity: HIGH,CRITICAL
+          exit-code: '0'
 
+      # 13. Publication du rapport dans GitHub Security
       - name: Upload Trivy SARIF to GitHub Security
-        if: always()
+        if: ${{ !cancelled() && hashFiles('trivy-results.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
