@@ -4,12 +4,11 @@ name: App CI Security
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
 
     permissions:
       contents: read
