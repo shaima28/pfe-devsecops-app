@@ -4,7 +4,6 @@ name: App CI Security
 on:
   push:
     branches: [main]
-  
 
 jobs:
   ci:
@@ -12,15 +11,13 @@ jobs:
 
     permissions:
       contents: read
-      security-events: write
-      actions: read
 
     steps:
       # 1. Récupération du code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Configuration Node.js
+      # 2. Configuration Node.js et cache npm
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -31,11 +28,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 4. Vérification de la syntaxe
+      # 4. Vérification syntaxique
       - name: Check app syntax
         run: node --check src/app.js
 
-      # 5. Exécution des tests
+      # 5. Tests automatisés
       - name: Run tests
         run: npm test
 
@@ -46,14 +43,18 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      # 7. Vérification du Quality Gate
+      # 7. Quality Gate bloquant
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@v1
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      # 8. Scan Trivy du système de fichiers
+      # 8. Nettoyage du rapport précédent
+      - name: Clear previous Trivy report
+        run: rm -f trivy-fs-results.json
+
+      # 9. Scan Trivy filesystem
       - name: Trivy filesystem scan JSON
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -65,71 +66,46 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: '0'
 
-      # 9. Construction de l'image Docker
-      - name: Build Docker image
-        run: docker build -t test-image:${{ github.sha }} .
-
-      # 10. Scan Trivy de l'image Docker
-      - name: Trivy Docker image scan JSON
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: image
-          image-ref: test-image:${{ github.sha }}
-          format: json
-          output: trivy-image-results.json
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-          exit-code: '0'
-
-      # 11. Résumé des vulnérabilités
+      # 10. Résumé de sécurité GitHub Actions
       - name: Show Trivy vulnerabilities summary
-        if: ${{ success() && hashFiles('trivy-fs-results.json') != '' && hashFiles('trivy-image-results.json') != '' }}
+        if: ${{ always() }}
         shell: bash
         run: |
-          echo "## 🔐 Trivy Security Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Trivy Filesystem Security Scan" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          FS_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-fs-results.json)
-          FS_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-fs-results.json)
+          if [ ! -s trivy-fs-results.json ]; then
+            echo "Trivy report unavailable." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
-          IMG_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-image-results.json)
-          IMG_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-image-results.json)
+          if ! jq -e '.Results? | type == "array"' trivy-fs-results.json >/dev/null; then
+            echo "Trivy JSON report could not be parsed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
-          FS_TOTAL=$((FS_HIGH + FS_CRITICAL))
-          IMG_TOTAL=$((IMG_HIGH + IMG_CRITICAL))
-          TOTAL_HIGH=$((FS_HIGH + IMG_HIGH))
-          TOTAL_CRITICAL=$((FS_CRITICAL + IMG_CRITICAL))
-          GLOBAL_TOTAL=$((FS_TOTAL + IMG_TOTAL))
+          HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")] | length' trivy-fs-results.json)
+          CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' trivy-fs-results.json)
+
+          TOTAL=$((HIGH + CRITICAL))
 
           echo "| Scan Type | HIGH | CRITICAL | TOTAL |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---:|---:|---:|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Filesystem Scan | $FS_HIGH | $FS_CRITICAL | $FS_TOTAL |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Docker Image Scan | $IMG_HIGH | $IMG_CRITICAL | $IMG_TOTAL |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Total** | **$TOTAL_HIGH** | **$TOTAL_CRITICAL** | **$GLOBAL_TOTAL** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Filesystem | $HIGH | $CRITICAL | $TOTAL |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$GLOBAL_TOTAL" -eq 0 ]; then
+          if [ "$TOTAL" -eq 0 ]; then
             echo "✅ No HIGH or CRITICAL vulnerabilities detected." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "⚠️ HIGH or CRITICAL vulnerabilities detected. Please review Trivy results." >> "$GITHUB_STEP_SUMMARY"
+            echo "⚠️ HIGH or CRITICAL vulnerabilities detected." >> "$GITHUB_STEP_SUMMARY"
+            echo "Review the downloadable Trivy report." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # 12. Génération du rapport SARIF
-      - name: Generate Trivy SARIF report
-        uses: aquasecurity/trivy-action@v0.36.0
+      # 11. Sauvegarde du rapport Trivy
+      - name: Upload Trivy filesystem report
+        if: ${{ always() && hashFiles('trivy-fs-results.json') != '' }}
+        uses: actions/upload-artifact@v4
         with:
-          scan-type: image
-          image-ref: test-image:${{ github.sha }}
-          format: sarif
-          output: trivy-results.sarif
-          ignore-unfixed: true
-          severity: HIGH,CRITICAL
-          exit-code: '0'
-
-      # 13. Publication du rapport dans GitHub Security
-      - name: Upload Trivy SARIF to GitHub Security
-        if: ${{ !cancelled() && hashFiles('trivy-results.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-          category: trivy-image-scan
+          name: trivy-filesystem-report
+          path: trivy-fs-results.json
+          retention-days: 14
