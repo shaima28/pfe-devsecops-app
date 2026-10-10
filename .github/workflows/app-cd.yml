@@ -1,12 +1,24 @@
+
 name: App CD - Build, Scan, Push and Update GitOps
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+  workflow_run:
+    workflows: ["App CI Security"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: app-cd-dev
+  cancel-in-progress: false
 
 jobs:
   build-scan-push-update-gitops:
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.head_repository.full_name == github.repository }}
+
     runs-on: ubuntu-latest
 
     permissions:
@@ -18,15 +30,33 @@ jobs:
       GAR_LOCATION: europe-west1
       GAR_REPOSITORY: dev-docker-repo
       IMAGE_NAME: livestream-server
-      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_TAG: ${{ github.event.workflow_run.head_sha }}
       IMAGE_FULL_NAME: europe-west1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/dev-docker-repo/livestream-server
       GITOPS_REPO: shaima28/pfe-devsecops-gitops
       GITOPS_FILE: gitops/apps/marketing-app/overlays/dev/kustomization.yaml
 
     steps:
-      - name: Checkout app repository
+      # 1. Récupérer le commit validé par la CI
+      - name: Checkout validated app commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
 
+      # 2. Vérifier que ce commit est toujours le dernier
+      - name: Ensure validated commit is still latest main
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          CURRENT_SHA=$(git ls-remote origin refs/heads/main | cut -f1)
+
+          if [ -z "$CURRENT_SHA" ] || [ "$CURRENT_SHA" != "$EXPECTED_SHA" ]; then
+            echo "This CI validated $EXPECTED_SHA but main is now $CURRENT_SHA."
+            echo "Skipping outdated deployment."
+            exit 1
+          fi
+
+      # 3. Authentification Google Cloud via WIF
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v2
@@ -35,41 +65,49 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           token_format: access_token
 
+      # 4. Configuration gcloud
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      # 5. Configuration Docker pour Artifact Registry
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev --quiet
+        run: gcloud auth configure-docker "$GAR_LOCATION-docker.pkg.dev" --quiet
 
+      # 6. Construction de l'image Docker
       - name: Build Docker image
         run: |
-          docker build -t $IMAGE_FULL_NAME:$IMAGE_TAG .
-          docker tag $IMAGE_FULL_NAME:$IMAGE_TAG $IMAGE_FULL_NAME:latest
+          docker build -t "$IMAGE_FULL_NAME:$IMAGE_TAG" .
+          docker tag "$IMAGE_FULL_NAME:$IMAGE_TAG" "$IMAGE_FULL_NAME:latest"
 
+      # 7. Analyse de sécurité Trivy
       - name: Run Trivy image scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.IMAGE_FULL_NAME }}:${{ env.IMAGE_TAG }}
           format: table
-          exit-code: 0
+          exit-code: '0'
           ignore-unfixed: true
           severity: CRITICAL
 
+      # 8. Publication dans Artifact Registry
       - name: Push Docker image
         run: |
-          docker push $IMAGE_FULL_NAME:$IMAGE_TAG
-          docker push $IMAGE_FULL_NAME:latest
+          docker push "$IMAGE_FULL_NAME:$IMAGE_TAG"
+          docker push "$IMAGE_FULL_NAME:latest"
 
+      # 9. Récupération du dépôt GitOps
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.GITOPS_REPO }}
           token: ${{ secrets.GITOPS_PAT }}
           path: gitops
+          persist-credentials: true
 
+      # 10. Mise à jour du tag de l'image
       - name: Update image tag in GitOps repository
         env:
-          NEW_TAG: ${{ github.sha }}
+          NEW_TAG: ${{ github.event.workflow_run.head_sha }}
           TARGET_FILE: ${{ env.GITOPS_FILE }}
           IMAGE_NAME_TO_MATCH: ${{ env.IMAGE_FULL_NAME }}
         run: |
@@ -89,27 +127,49 @@ jobs:
 
           content = target_file.read_text(encoding="utf-8")
 
-          pattern = r"(?ms)(-\s*name:\s*" + re.escape(image_name) + r"\s*\n\s*newTag:\s*)(\S+)"
-          updated_content, count = re.subn(pattern, r"\g<1>" + new_tag, content)
+          pattern = (
+              r"(?m)(-\s*name:\s*"
+              + re.escape(image_name)
+              + r"\s*\n\s*newTag:\s*)(\S+)"
+          )
 
-          if count == 0:
-              print("Could not update newTag. Check kustomization.yaml structure.")
+          updated_content, count = re.subn(
+              pattern,
+              lambda m: m.group(1) + new_tag,
+              content
+          )
+
+          if count != 1:
+              print(f"Expected exactly one image tag match, found {count}.")
               sys.exit(1)
 
-          target_file.write_text(updated_content, encoding="utf-8")
+          target_file.write_text(
+              updated_content,
+              encoding="utf-8"
+          )
+
           print(f"Updated {target_file} with newTag: {new_tag}")
           PY
 
+      # 11. Afficher les changements GitOps
       - name: Show GitOps changes
         run: |
           cd gitops
           git diff -- apps/marketing-app/overlays/dev/kustomization.yaml
 
+      # 12. Commit et push vers GitOps
       - name: Commit and push GitOps changes
         run: |
           cd gitops
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add apps/marketing-app/overlays/dev/kustomization.yaml
-          git commit -m "Update marketing-app image to $IMAGE_TAG" || echo "No changes to commit"
-          git push origin main
+
+          if git diff --cached --quiet; then
+            echo "No GitOps changes to commit."
+          else
+            git commit -m "Update marketing-app image to $IMAGE_TAG"
+            git push origin main
+          fi
